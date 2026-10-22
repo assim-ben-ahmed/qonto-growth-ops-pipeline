@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Growth Ops Pipeline Report</title>
+<script>{{ plotly_js | safe }}</script>
+<style>
+  :root { --ink:#1C1B29; --muted:#6B6A80; --line:#E8E8EE; --bg:#F6F6F9; --accent:#5B4BDB; --warn:#B4441C; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.5 Inter, "Segoe UI", sans-serif; }
+  main { max-width:1180px; margin:0 auto; padding:28px 16px 48px; }
+  header h1 { margin:0; font-size:24px; }
+  header p { margin:4px 0 22px; color:var(--muted); }
+  .kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:12px; margin-bottom:16px; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:12px; padding:16px; min-width:0; }
+  .kpi .label { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+  .kpi .value { font-size:28px; font-weight:700; margin:2px 0; }
+  .kpi .sub { color:var(--muted); font-size:12px; }
+  /* Fixed 2 columns: with auto-fit, the first chart would draw while it's alone in the grid (full width). */
+  .charts { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; margin-bottom:16px; }
+  @media (max-width:900px) { .charts { grid-template-columns:minmax(0,1fr); } }
+  h2 { font-size:16px; margin:0 0 10px; }
+  .tablewrap { overflow-x:auto; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th { text-align:left; color:var(--muted); font-weight:600; border-bottom:1px solid var(--line); padding:8px 6px; white-space:nowrap; }
+  td { border-bottom:1px solid var(--line); padding:8px 6px; vertical-align:top; }
+  td.note { min-width:320px; }
+  .pill { display:inline-block; padding:1px 8px; border-radius:999px; font-size:12px; background:#EEECFB; color:var(--accent); }
+  .pill.hot { background:var(--accent); color:#fff; }
+  .flag { color:var(--warn); font-size:12px; }
+  footer { color:var(--muted); font-size:12px; margin-top:18px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Growth Ops Pipeline - Sign-up Report</h1>
+    <p>Sign-ups → enrichment (recherche-entreprises.api.gouv.fr) → scoring → Salesforce / Braze. Generated {{ generated }}.</p>
+  </header>
+
+  <section class="kpis">
+    {% for k in kpis %}
+    <div class="card kpi"><div class="label">{{ k.label }}</div><div class="value">{{ k.value }}</div><div class="sub">{{ k.sub }}</div></div>
+    {% endfor %}
+  </section>
+
+  <section class="charts">
+    {% for c in charts %}<div class="card">{{ c | safe }}</div>{% endfor %}
+  </section>
+
+  <section class="card">
+    <h2>Top leads routed to Sales (score ≥ {{ threshold }})</h2>
+    <div class="tablewrap"><table>
+      <tr><th>Score</th><th>Company</th><th>Industry</th><th>City</th><th>Source</th><th>Queue</th><th>AI sales note</th></tr>
+      {% for l in leads %}
+      <tr>
+        <td><span class="pill {{ 'hot' if l.Rating == 'Hot' }}">{{ l.Score }} · {{ l.Rating }}</span></td>
+        <td>{{ l.Company }}</td><td>{{ l.Industry }}</td><td>{{ l.City or '-' }}</td>
+        <td>{{ l.LeadSource }}</td><td>{{ l.OwnerQueue }}</td>
+        <td class="note">{{ l.Note }}{% if l.Flags %}<br><span class="flag">⚠ {{ l.Flags }}</span>{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </table></div>
+  </section>
+
+  {% if flagged %}
+  <section class="card" style="margin-top:12px">
+    <h2>AI notes held for review ({{ flagged|length }}) - mention facts not in the enriched data</h2>
+    <div class="tablewrap"><table>
+      <tr><th>Company</th><th>Note</th><th>Why flagged</th></tr>
+      {% for f in flagged %}<tr><td>{{ f.Company }}</td><td class="note">{{ f.Note }}</td><td class="flag">{{ f.Flags }}</td></tr>{% endfor %}
+    </table></div>
+  </section>
+  {% endif %}
+
+  <footer>Portfolio project - company data is public (INSEE / RNE via api.gouv.fr); sign-up events, channels and plans are simulated.</footer>
+</main>
+</body>
+</html>

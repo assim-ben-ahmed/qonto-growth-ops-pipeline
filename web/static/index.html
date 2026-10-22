@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Growth Ops Console</title>
+<link rel="stylesheet" href="/static/style.css">
+<script src="/plotly.js"></script>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><span class="logo">G</span> Growth Ops Console</div>
+  <nav id="tabs">
+    <button data-view="overview" class="active">Overview</button>
+    <button data-view="leads">Leads</button>
+    <button data-view="sql">SQL</button>
+    <button data-view="rules">Scoring rules</button>
+  </nav>
+</header>
+
+<main>
+  <!-- OVERVIEW -->
+  <section id="view-overview" class="view active">
+    <div class="kpis" id="kpis"></div>
+
+    <div class="card">
+      <h2>Pipeline</h2>
+      <div class="flow" id="flow"></div>
+    </div>
+
+    <div class="card sim">
+      <div class="sim-head">
+        <div>
+          <h2>Threshold simulator</h2>
+          <p class="muted">Where should the cut-off between Sales and nurture be? Drag to see the trade-off.</p>
+        </div>
+        <div class="sim-value"><span id="sim-t"></span><small>threshold</small></div>
+      </div>
+      <input type="range" id="sim-slider" min="30" max="100" step="5">
+      <div class="sim-result" id="sim-result"></div>
+      <div id="sim-channels"></div>
+    </div>
+
+    <div class="charts">
+      <div class="card"><div id="chart-channel" class="chart"></div></div>
+      <div class="card"><div id="chart-sector" class="chart"></div></div>
+      <div class="card"><div id="chart-score" class="chart"></div></div>
+      <div class="card"><div id="chart-age" class="chart"></div></div>
+    </div>
+  </section>
+
+  <!-- LEADS -->
+  <section id="view-leads" class="view">
+    <div class="filters card">
+      <input type="search" id="f-search" placeholder="Search company, city, SIREN...">
+      <select id="f-route">
+        <option value="">All routes</option>
+        <option value="crm">Sales (CRM)</option>
+        <option value="braze">Nurture (Braze)</option>
+      </select>
+      <select id="f-channel"><option value="">All channels</option></select>
+      <select id="f-rating">
+        <option value="">Any rating</option>
+        <option>Hot</option><option>Warm</option>
+      </select>
+      <label class="check"><input type="checkbox" id="f-flagged"> Flagged AI notes only</label>
+      <span class="muted" id="f-count"></span>
+    </div>
+    <div class="card tablewrap">
+      <table class="leads">
+        <thead><tr>
+          <th>Score</th><th>Company</th><th>Sector</th><th>Employees</th><th>City</th>
+          <th>Channel</th><th>Route</th><th>AI note</th>
+        </tr></thead>
+        <tbody id="leads-body"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- SQL -->
+  <section id="view-sql" class="view">
+    <div class="sql-layout">
+      <aside class="card" id="sql-list"></aside>
+      <div>
+        <div class="card">
+          <h2 id="sql-title">Query</h2>
+          <textarea id="sql-text" spellcheck="false"></textarea>
+          <div class="sql-actions">
+            <button id="sql-run" class="primary">Run query</button>
+            <span class="muted">Read-only connection: SELECT queries only.</span>
+          </div>
+        </div>
+        <div class="card tablewrap" id="sql-result"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- RULES -->
+  <section id="view-rules" class="view">
+    <div class="rules" id="rules"></div>
+  </section>
+</main>
+
+<!-- Lead detail panel -->
+<div class="scrim" id="scrim"></div>
+<aside class="drawer" id="drawer" aria-hidden="true"></aside>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+# secrets
+.env
+
+# local data (raw events, API cache, SQLite db)
+data/
+
+# python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# generated outputs (dashboard screenshot in docs/ is kept)
+output/

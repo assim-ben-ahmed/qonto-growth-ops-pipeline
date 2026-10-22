@@ -1,0 +1,69 @@
+# All tunable knobs of the pipeline live here.
+
+run:
+  n_companies: 200          # how many real companies to turn into fake sign-ups
+  random_seed: 42           # same seed -> same fake events -> reproducible runs
+  signup_window_days: 30    # sign-ups are spread over the last N days
+
+api:
+  base_url: https://recherche-entreprises.api.gouv.fr/search
+  max_requests_per_second: 5   # the public API allows ~7/s; stay under it
+  timeout_seconds: 10
+  max_retries: 3
+
+ingest:
+  # Varied terms so the sample covers several sectors.
+  search_terms:
+    - boulangerie
+    - conseil
+    - agence web
+    - plombier
+    - restaurant
+    - architecte
+    - expert comptable
+    - e-commerce
+    - transport
+    - coiffure
+  filters:
+    etat_administratif: A        # active companies only
+    categorie_entreprise: PME    # SMEs (Qonto's core market)
+
+# Acquisition channels: share of sign-ups + the UTM tags they carry.
+channels:
+  paid_meta:          {weight: 0.25, utm_source: facebook,   utm_medium: paid_social, utm_campaign: fr_sme_signup_q4}
+  paid_google:        {weight: 0.25, utm_source: google,     utm_medium: cpc,         utm_campaign: fr_business_account_search}
+  seo:                {weight: 0.20, utm_source: google,     utm_medium: organic,     utm_campaign: none}
+  partner_accountant: {weight: 0.15, utm_source: accountant, utm_medium: partner,     utm_campaign: accountant_program}
+  referral:           {weight: 0.15, utm_source: qonto,      utm_medium: referral,    utm_campaign: refer_a_friend}
+
+plans: {Basic: 0.25, Smart: 0.30, Essential: 0.20, Business: 0.20, Enterprise: 0.05}
+
+# Rule-based lead score, 0-100 = headcount (35) + age (25) + sector (20) + channel (20).
+scoring:
+  threshold: 70              # score >= threshold -> Sales (CRM); below -> Braze nurture
+  hot_rating_threshold: 85   # CRM Rating "Hot" from this score, otherwise "Warm"
+  # [minimum value, points] - the highest matching band wins.
+  headcount_bands: [[0, 5], [1, 15], [10, 30], [50, 35], [250, 20]]
+  headcount_unknown: 5
+  age_bands: [[0, 10], [1, 15], [3, 25], [10, 20]]
+  age_unknown: 5
+  # NAF sections: J=IT/telecom, M=professional services, F=construction,
+  # G=trade, N=business support, I=hospitality.
+  sector_points: {J: 20, M: 20, F: 15, G: 15, N: 15, I: 10}
+  sector_default: 5
+  channel_points: {partner_accountant: 20, referral: 15, paid_google: 10, seo: 10, paid_meta: 5}
+
+routing:
+  lead_source_map:
+    paid_meta: Paid Social
+    paid_google: Paid Search
+    seo: Organic Search
+    partner_accountant: Accountant Partner
+    referral: Customer Referral
+  midmarket_min_headcount: 50
+
+ai:
+  model: ministral-8b-latest   # small + cheap is enough for one-liners
+  api_url: https://api.mistral.ai/v1/chat/completions
+  max_requests_per_second: 1
+  max_notes: 100
