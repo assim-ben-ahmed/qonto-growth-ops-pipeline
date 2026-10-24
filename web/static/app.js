@@ -1,8 +1,12 @@
 // Growth Ops Console - plain JavaScript, no framework.
 // Data comes from the Flask API (web/server.py), which reads the pipeline's SQLite db.
+// On GitHub Pages there is no server: web/build_static.py saves every GET response as a
+// .json file, and SQL runs in the browser on a copy of the db (sql.js).
 
-const state = { leads: [], config: null, summary: null };
-const ACCENT = "#5B4BDB", MUTED = "#C9C3F2", GRID = "#E6E6EE";
+const STATIC = window.STATIC_SITE === true;
+const SQL_JS_DIR = "https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/";
+const state = { leads: [], config: null, summary: null, journeys: {}, outbox: {} };
+const ACCENT = "#5B4BDB", MUTED = "#C9C3F2", GRID = "#E6E6EE", OUTCOME = "#1E9E7A";
 const CHANNEL_LABELS = {
   partner_accountant: "Accountant partner", referral: "Referral",
   paid_google: "Paid search", seo: "SEO", paid_meta: "Paid social (Meta)",
@@ -13,6 +17,7 @@ const $ = (sel) => document.querySelector(sel);
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const api = async (path, options) => {
+  if (STATIC && !options) path = `${path}.json`; // pre-built snapshot of the same endpoint
   const res = await fetch(path, options);
   const body = await res.json();
   if (!res.ok) throw new Error(body.error || res.statusText);
@@ -20,6 +25,7 @@ const api = async (path, options) => {
 };
 const pct = (a, b) => (b ? Math.round((100 * a) / b) : 0);
 const channelLabel = (c) => CHANNEL_LABELS[c] || c;
+const json = (obj) => `<pre class="json">${esc(JSON.stringify(obj, null, 2))}</pre>`;
 
 function ratingPill(lead) {
   if (lead.routed_to !== "crm") return `<span class="pill cold">${lead.score}</span>`;
@@ -27,6 +33,7 @@ function ratingPill(lead) {
 }
 
 // ---------- tabs ----------
+const VIEWS = ["overview", "leads", "integrations", "sql", "rules"];
 document.querySelectorAll("#tabs button").forEach((btn) =>
   btn.addEventListener("click", () => showView(btn.dataset.view)));
 
@@ -40,11 +47,12 @@ function showView(name) {
 // ---------- overview ----------
 function renderKpis(s) {
   const kpis = [
-    ["Sign-ups", s.events, "Segment track events"],
-    ["Enriched", `${pct(s.enriched, s.events)}%`, `${s.partial} with a missing field`],
+    ["Website visitors", s.visitors, `${pct(s.events, s.visitors)}% signed up`],
+    ["Sign-ups", s.events, `${pct(s.enriched, s.events)}% enriched · ${s.partial} partial`],
     ["Leads to Sales", s.crm, `${pct(s.crm, s.events)}% · ${s.hot} rated Hot`],
-    ["To nurture", s.braze, "Braze user import"],
+    ["To nurture", s.braze, "Braze /users/track"],
     ["AI notes flagged", s.notes_flagged, `of ${s.crm} notes (${s.notes_llm} by LLM)`],
+    ["Score AUC", s.auc ?? "-", "on simulated outcomes · 0.5 = random"],
   ];
   $("#kpis").innerHTML = kpis.map(([label, value, sub]) =>
     `<div class="card kpi"><div class="label">${label}</div><div class="value">${value}</div><div class="sub">${sub}</div></div>`).join("");
@@ -54,14 +62,16 @@ function renderFlow(s) {
   const step = (n, t, d) => `<div class="step"><div class="n">${n}</div><div class="t">${t}</div><div class="d">${d}</div></div>`;
   const arrow = `<div class="arrow">→</div>`;
   $("#flow").innerHTML = [
-    step(s.events, "Sign-up events", "Segment · Account Signed Up"), arrow,
+    step(s.visitors, "Website visitors", "Segment page · track · identify"), arrow,
+    step(s.events, "Sign-ups", "Account Signed Up"), arrow,
     step(s.enriched, "Enriched", "api.gouv.fr by SIREN"), arrow,
     step(s.scored, "Scored", "rules: size · age · sector · channel"), arrow,
     `<div class="step split">
        <div class="crm"><b>${s.crm}</b> → Salesforce lead</div>
        <div><b>${s.braze}</b> → Braze nurture</div>
      </div>`, arrow,
-    step(s.notes_llm, "AI sales notes", `${s.notes_flagged} flagged for review`),
+    step(s.notes_llm, "AI sales notes", `${s.notes_flagged} held for review`), arrow,
+    step(s.crm + s.braze, "Outbox", "Salesforce · Braze · Meta CAPI payloads"),
   ].join("");
 }
 
@@ -73,9 +83,12 @@ function renderSimulator() {
     const t = Number(slider.value);
     const total = state.leads.length;
     const toSales = state.leads.filter((l) => l.score >= t);
+    const won = state.leads.filter((l) => l.converted).length;
+    const wonBySales = toSales.filter((l) => l.converted).length;
     $("#sim-t").textContent = t;
     $("#sim-result").innerHTML =
-      `Sales would receive <b>${toSales.length}</b> of ${total} sign-ups (<b>${pct(toSales.length, total)}%</b>)` +
+      `Sales would receive <b>${toSales.length}</b> of ${total} sign-ups (<b>${pct(toSales.length, total)}%</b>) ` +
+      `and reach <b>${pct(wonBySales, won)}%</b> of future customers` +
       (t === current ? ` <span class="muted">· current setting in config.yaml</span>`
                      : ` <span class="muted">· today: ${state.leads.filter((l) => l.score >= current).length} at ${current}</span>`);
 
@@ -105,25 +118,30 @@ const layout = (title, extra = {}) => ({
 const plot = (id, data, lay) => Plotly.newPlot(id, data, lay, { displayModeBar: false, responsive: true });
 
 async function renderCharts() {
-  const [ch, sec, dist, age] = await Promise.all([
-    api("/api/sql/01_hot_leads_by_channel"), api("/api/sql/02_top_sectors"),
-    api("/api/sql/03_score_distribution"), api("/api/sql/04_signups_by_company_age"),
+  const [funnel, ch, sec, dist, val, age] = await Promise.all([
+    api("api/sql/05_website_funnel"), api("api/sql/07_channel_outcomes"), api("api/sql/02_top_sectors"),
+    api("api/sql/03_score_distribution"), api("api/sql/06_score_validation"), api("api/sql/04_signups_by_company_age"),
   ]);
   const t = state.config.scoring.threshold;
 
-  ch.sort((a, b) => a.hot_rate_pct - b.hot_rate_pct);
-  plot("chart-channel", [{
-    type: "bar", orientation: "h", x: ch.map((r) => r.hot_rate_pct), y: ch.map((r) => channelLabel(r.source_channel)),
-    marker: { color: ACCENT }, text: ch.map((r) => `${r.hot_rate_pct}%`), textposition: "outside", cliponaxis: false,
-    customdata: ch.map((r) => [r.hot_leads, r.signups]),
-    hovertemplate: "%{y}: %{customdata[0]} of %{customdata[1]} sign-ups to Sales<extra></extra>",
-  }], layout("Share of sign-ups sent to Sales, by channel", { xaxis: { gridcolor: GRID, ticksuffix: "%", range: [0, 100], automargin: true } }));
+  const steps = {}; // all channels together
+  funnel.forEach((r) => { steps[r.step_order] ||= { step: r.step, visitors: 0 }; steps[r.step_order].visitors += r.visitors; });
+  const fs = Object.values(steps);
+  plot("chart-funnel", [{
+    type: "funnel", y: fs.map((s) => s.step), x: fs.map((s) => s.visitors),
+    marker: { color: ACCENT }, textinfo: "value+percent initial",
+  }], layout("Website funnel (Segment page / track calls)", { margin: { l: 110, r: 30, t: 44, b: 10 } }));
 
-  sec.sort((a, b) => a.signups - b.signups);
-  plot("chart-sector", [
-    { type: "bar", orientation: "h", name: "Nurture (Braze)", x: sec.map((r) => r.signups - r.hot_leads), y: sec.map((r) => r.sector), marker: { color: MUTED } },
-    { type: "bar", orientation: "h", name: "Sales (CRM)", x: sec.map((r) => r.hot_leads), y: sec.map((r) => r.sector), marker: { color: ACCENT } },
-  ], layout("Top sectors - sign-ups by route", { barmode: "stack" }));
+  ch.sort((a, b) => a.conversion_pct - b.conversion_pct);
+  const chY = ch.map((r) => channelLabel(r.source_channel));
+  plot("chart-channel", [
+    { type: "bar", orientation: "h", name: "Sent to Sales (score)", x: ch.map((r) => r.sent_to_sales_pct), y: chY, marker: { color: ACCENT },
+      hovertemplate: "%{y}: %{x}% sent to Sales<extra></extra>" },
+    { type: "bar", orientation: "h", name: "Converted (simulated)", x: ch.map((r) => r.conversion_pct), y: chY, marker: { color: OUTCOME },
+      hovertemplate: "%{y}: %{x}% converted<extra></extra>" },
+  ], layout("Channels: what the score says vs. what converts",
+    { barmode: "group", xaxis: { gridcolor: GRID, ticksuffix: "%", range: [0, 100], automargin: true },
+      legend: { orientation: "h", y: -0.12, x: 0, traceorder: "normal" } })); // long title: legend below
 
   plot("chart-score", [{
     type: "bar", x: dist.map((r) => r.bucket_label), y: dist.map((r) => r.leads),
@@ -132,10 +150,28 @@ async function renderCharts() {
     hovertemplate: "Score %{x}: %{y} leads<br>%{customdata} at or above<extra></extra>",
   }], layout(`Lead score distribution (threshold ${t})`));
 
+  plot("chart-validation", [{
+    type: "bar", x: val.map((r) => r.score_group), y: val.map((r) => r.conversion_pct), marker: { color: OUTCOME },
+    text: val.map((r) => `lift ${r.lift.toFixed(2)}`), textposition: "outside", cliponaxis: false,
+    customdata: val.map((r) => [r.score_range, r.cum_share_of_conversions_pct]),
+    hovertemplate: "Scores %{customdata[0]}: %{y}% converted<br>%{customdata[1]}% of all conversions so far<extra></extra>",
+  }], layout(`Does the score predict conversion? AUC ${state.summary.auc}`,
+    { yaxis: { gridcolor: GRID, ticksuffix: "%", range: [0, 100], automargin: true } }));
+
+  sec.sort((a, b) => a.signups - b.signups);
+  plot("chart-sector", [
+    { type: "bar", orientation: "h", name: "Nurture (Braze)", x: sec.map((r) => r.signups - r.hot_leads), y: sec.map((r) => r.sector), marker: { color: MUTED } },
+    { type: "bar", orientation: "h", name: "Sales (CRM)", x: sec.map((r) => r.hot_leads), y: sec.map((r) => r.sector), marker: { color: ACCENT } },
+  ], layout("Top sectors - sign-ups by route", { barmode: "stack" }));
+
+  const ageX = age.map((r) => r.age_bucket.slice(3));
   plot("chart-age", [
-    { type: "bar", name: "Sales (CRM)", x: age.map((r) => r.age_bucket.slice(3)), y: age.map((r) => r.hot_leads), marker: { color: ACCENT } },
-    { type: "bar", name: "Nurture (Braze)", x: age.map((r) => r.age_bucket.slice(3)), y: age.map((r) => r.nurture), marker: { color: MUTED } },
-  ], layout("Sign-ups by company age", { barmode: "stack" }));
+    { type: "bar", name: "Sales (CRM)", x: ageX, y: age.map((r) => r.hot_leads), marker: { color: ACCENT } },
+    { type: "bar", name: "Nurture (Braze)", x: ageX, y: age.map((r) => r.nurture), marker: { color: MUTED } },
+    { type: "scatter", mode: "lines+markers", name: "Converted %", x: ageX, y: age.map((r) => r.conversion_pct),
+      yaxis: "y2", line: { color: OUTCOME }, hovertemplate: "%{x}: %{y}% converted<extra></extra>" },
+  ], layout("Sign-ups by company age", { barmode: "stack",
+    yaxis2: { overlaying: "y", side: "right", ticksuffix: "%", range: [0, 100], showgrid: false } }));
 }
 
 // ---------- leads ----------
@@ -178,17 +214,44 @@ $("#leads-body").addEventListener("click", (e) => {
 });
 
 // ---------- lead detail drawer ----------
+function ago(fromIso, toIso) {
+  const min = Math.round((new Date(toIso) - new Date(fromIso)) / 60000);
+  if (min <= 0) return "at sign-up";
+  if (min < 60) return `${min} min before`;
+  if (min < 48 * 60) return `${Math.round(min / 60)} h before`;
+  return `${Math.round(min / 1440)} days before`;
+}
+
+function journeyHtml(l) {
+  const calls = state.journeys[l.anonymous_id] || [];
+  const label = (c) => {
+    if (c.type === "page") return `<b>page</b> ${esc(c.name)} <span class="muted">${esc(c.path)}</span>` +
+      (c.name === "Landing" ? `<br><span class="muted">utm ${esc(c.utm_source)} / ${esc(c.utm_medium)}${c.click_id ? ` · click id ${esc(c.click_id)}` : ""}</span>` : "");
+    if (c.type === "identify") return `<b>identify</b> anonymousId → userId <code>${esc(c.user_id)}</code>`;
+    return `<b>track</b> ${esc(c.name)}`;
+  };
+  return `<ol class="timeline">${calls.map((c) =>
+    `<li class="${c.type}"><span class="when">${ago(c.timestamp, l.timestamp)}</span>${label(c)}</li>`).join("")}</ol>`;
+}
+
+function payloadsHtml(l) {
+  const records = (name, key) => (state.outbox[name] || []).flatMap((req) => key(req.body));
+  const sf = records("salesforce_leads_upsert", (b) => b.records).find((r) => r.SIREN__c === l.siren);
+  const brazeAttr = records("braze_users_track", (b) => b.attributes).find((r) => r.external_id === l.siren);
+  const brazeEvent = records("braze_users_track", (b) => b.events).find((r) => r.external_id === l.siren);
+  const meta = records("meta_conversions_api", (b) => b.data).find((r) => r.event_id === `qualified_${l.siren}`);
+  if (sf) return `<p class="muted">Salesforce · upsert on External ID <code>SIREN__c</code></p>${json(sf)}
+    <p class="muted">Meta Conversions API · ${meta.user_data.fbc ? "with the ad click id (fbc)" : "no Meta click id: matched on hashed external_id only"}</p>${json(meta)}`;
+  if (brazeAttr) return `<p class="muted">Braze /users/track · attributes + event that starts the Canvas</p>${json({ attributes: brazeAttr, event: brazeEvent })}`;
+  return `<p class="muted">Run the outbox stage to generate payloads.</p>`;
+}
+
 function openLead(siren) {
   const l = state.leads.find((x) => x.siren === siren);
+  if (!l) return;
   const max = state.config.max_points;
   const bar = (label, pts, m) => `<div class="bd-row"><span>${label}</span>
     <div class="sim-bar"><span style="width:${pct(pts, m)}%"></span></div><span class="pts">${pts} / ${m}</span></div>`;
-
-  const segmentEvent = {
-    type: "track", event: l.event, messageId: l.message_id, anonymousId: l.anonymous_id, timestamp: l.timestamp,
-    properties: { siren: l.siren, company_name: l.company_name, source_channel: l.source_channel,
-      utm_source: l.utm_source, utm_medium: l.utm_medium, utm_campaign: l.utm_campaign, plan_chosen: l.plan_chosen },
-  };
 
   const routing = l.routed_to === "crm"
     ? `<dl class="facts">
@@ -206,10 +269,16 @@ function openLead(siren) {
   const note = l.note
     ? `<section><h4>AI sales note <span class="tag">${esc(l.note_source)}</span></h4>
          <div class="note-box ${l.note_flags ? "flagged" : ""}">${esc(l.note)}</div>
-         ${l.note_flags ? `<p class="flag">⚠ Held for review: ${esc(l.note_flags)}</p>`
+         ${l.note_flags ? `<p class="flag">⚠ Held for review (not sent to Salesforce): ${esc(l.note_flags)}</p>`
                         : `<p class="ok">✓ Validated: only uses facts from the enriched data</p>`}
        </section>`
     : "";
+
+  const outcome = l.converted == null ? "" : `
+    <section><h4>Outcome <span class="tag">simulated</span></h4>
+      <p>${l.converted ? `<span class="ok">● Became a paying customer</span>` : `<span class="muted">○ Did not convert</span>`}
+      <span class="muted">· hidden probability ${Math.round(100 * l.true_probability)}%, which the score never sees</span></p>
+    </section>`;
 
   $("#drawer").innerHTML = `
     <button class="close" aria-label="Close">×</button>
@@ -227,8 +296,11 @@ function openLead(siren) {
     </section>
 
     ${note}
+    ${outcome}
 
     <section><h4>Routing</h4>${routing}</section>
+
+    <section><h4>Website journey (Segment)</h4>${journeyHtml(l)}</section>
 
     <section>
       <h4>Enriched data</h4>
@@ -244,13 +316,11 @@ function openLead(siren) {
       </dl>
     </section>
 
-    <section>
-      <h4>Source event (Segment)</h4>
-      <pre class="json">${esc(JSON.stringify(segmentEvent, null, 2))}</pre>
-    </section>`;
+    <section><h4>Integration payloads (dry run)</h4>${payloadsHtml(l)}</section>`;
 
   $("#drawer").classList.add("open");
   $("#scrim").classList.add("open");
+  $("#drawer").scrollTop = 0;
   $("#drawer .close").addEventListener("click", closeLead);
 }
 
@@ -261,13 +331,86 @@ function closeLead() {
 $("#scrim").addEventListener("click", closeLead);
 document.addEventListener("keydown", (e) => e.key === "Escape" && closeLead());
 
+// ---------- integrations ----------
+const DESTINATIONS = {
+  salesforce_leads_upsert: {
+    title: "Salesforce · Lead upsert", records: (b) => b.records,
+    why: "Hot leads become Salesforce Leads. Upsert on the External ID <code>SIREN__c</code>: replaying the file updates records instead of duplicating them. A flagged AI note is sent empty with <code>Note_Needs_Review__c = true</code>.",
+  },
+  braze_users_track: {
+    title: "Braze · /users/track", records: (b) => b.attributes,
+    why: "Everyone else gets Braze custom attributes plus a <code>nurture_enrolled</code> event. That event is what triggers the Canvas for their <code>nurture_track</code>.",
+  },
+  meta_conversions_api: {
+    title: "Meta · Conversions API", records: (b) => b.data,
+    why: "A <code>QualifiedLead</code> event per Sales-ready lead, so Meta optimises ads for leads Sales wants, not for raw sign-ups. IDs are SHA-256 hashed. Leads that clicked a Meta ad also carry <code>fbc</code> (built from the fbclid on the landing page).",
+  },
+};
+
+function renderIntegrations() {
+  const names = Object.keys(DESTINATIONS).filter((n) => state.outbox[n]);
+  if (!names.length) { $("#int-detail").innerHTML = `<div class="card muted">No outbox yet: run <code>python run_pipeline.py</code>.</div>`; return; }
+  $("#int-list").innerHTML = names.map((n) => {
+    const reqs = state.outbox[n];
+    const count = reqs.reduce((sum, r) => sum + DESTINATIONS[n].records(r.body).length, 0);
+    return `<button data-name="${n}"><b>${DESTINATIONS[n].title}</b><br><span class="muted">${count} records · ${reqs.length} request${reqs.length > 1 ? "s" : ""}</span></button>`;
+  }).join("");
+
+  const select = (name) => {
+    document.querySelectorAll("#int-list button").forEach((b) => b.classList.toggle("active", b.dataset.name === name));
+    const d = DESTINATIONS[name], req = state.outbox[name][0];
+    const items = d.records(req.body);
+    const preview = JSON.parse(JSON.stringify(req)); // show 2 records, not all of them
+    Object.keys(preview.body).forEach((k) => {
+      if (Array.isArray(preview.body[k]) && preview.body[k].length > 2)
+        preview.body[k] = [...preview.body[k].slice(0, 2), `… ${preview.body[k].length - 2} more`];
+    });
+    $("#int-detail").innerHTML = `<div class="card">
+        <h2>${d.title}</h2><p>${d.why}</p>
+        <p><span class="tag">${esc(req.method)}</span> <code>${esc(req.url)}</code></p>
+        <p class="muted">Dry run: tokens are {PLACEHOLDERS} and nothing is sent. File: <code>output/outbox/${name}.json</code> · ${items.length} records in the first request.</p>
+        ${json(preview)}
+      </div>`;
+  };
+  $("#int-list").addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-name]");
+    if (b) select(b.dataset.name);
+  });
+  select(names[0]);
+}
+
 // ---------- SQL ----------
+let browserDb = null; // static site only: the SQLite file loaded into sql.js
+
+function checkSelectOnly(text) {
+  const sql = text.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/--[^\n]*/g, " ").trim().replace(/;$/, "");
+  if (!/^(select|with)\b/i.test(sql) || sql.includes(";"))
+    throw new Error("Only a single SELECT (or WITH ... SELECT) query is allowed.");
+  return sql;
+}
+
+async function runQuery(text) {
+  if (!STATIC) return api("api/query", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sql: text }),
+  });
+  const sql = checkSelectOnly(text);
+  if (!browserDb) {
+    const SQL = await initSqlJs({ locateFile: (f) => SQL_JS_DIR + f });
+    browserDb = new SQL.Database(new Uint8Array(await (await fetch("growth_ops.db")).arrayBuffer()));
+  }
+  const res = browserDb.exec(sql);
+  if (!res.length) return [];
+  const { columns, values } = res[0];
+  return values.slice(0, 500).map((v) => Object.fromEntries(columns.map((c, i) => [c, v[i]])));
+}
+
 async function setupSql() {
-  const files = await api("/api/sql");
+  const files = await api("api/sql");
   const pretty = (name) => name.replace(/^\d+_/, "").replaceAll("_", " ");
   $("#sql-list").innerHTML =
     files.map((f) => `<button data-name="${f.name}">${esc(pretty(f.name))}</button>`).join("") +
     `<div class="sep"></div><button data-name="__custom">✎ Write your own</button>`;
+  if (STATIC) $("#sql-mode").textContent = "Runs in your browser on a copy of the SQLite db (sql.js). SELECT queries only.";
 
   const select = (name) => {
     document.querySelectorAll("#sql-list button").forEach((b) => b.classList.toggle("active", b.dataset.name === name));
@@ -293,10 +436,7 @@ async function runSql() {
   const out = $("#sql-result");
   try {
     const t0 = performance.now();
-    const rows = await api("/api/query", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sql: $("#sql-text").value }),
-    });
+    const rows = await runQuery($("#sql-text").value);
     const ms = Math.round(performance.now() - t0);
     if (!rows.length) { out.innerHTML = `<div class="result-meta">0 rows · ${ms} ms</div>`; return; }
     const cols = Object.keys(rows[0]);
@@ -342,15 +482,18 @@ function renderRules() {
 
 // ---------- boot ----------
 (async function init() {
-  [state.summary, state.leads, state.config] = await Promise.all([api("/api/summary"), api("/api/leads"), api("/api/config")]);
+  if (STATIC) $("#demo-banner").hidden = false;
+  [state.summary, state.leads, state.config, state.journeys, state.outbox] = await Promise.all([
+    api("api/summary"), api("api/leads"), api("api/config"), api("api/journeys"), api("api/outbox")]);
   renderKpis(state.summary);
   renderFlow(state.summary);
   renderSimulator();
   setupLeadFilters();
   renderLeads();
   renderRules();
+  renderIntegrations();
   await Promise.all([renderCharts(), setupSql()]);
   const start = location.hash.slice(1);
-  if (["leads", "sql", "rules"].includes(start)) showView(start);
+  if (VIEWS.includes(start)) showView(start);
   if (start.startsWith("lead=")) { showView("leads"); openLead(start.slice(5)); } // e.g. #lead=331747485
 })();

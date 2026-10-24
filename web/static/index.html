@@ -4,15 +4,21 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Growth Ops Console</title>
-<link rel="stylesheet" href="/static/style.css">
-<script src="/plotly.js"></script>
+<!-- Relative paths: the same file works on Flask (/) and on GitHub Pages (/<repo>/). -->
+<link rel="stylesheet" href="static/style.css">
+<script src="plotly.js"></script>
 </head>
 <body>
+<div class="demo-banner" id="demo-banner" hidden>
+  Static demo on GitHub Pages: a snapshot rebuilt by GitHub Actions on every push. Sign-ups, website visits and outcomes are simulated; company data is real and public.
+  <a href="https://github.com/assim-ben-ahmed/qonto-growth-ops-pipeline">Source code ↗</a>
+</div>
 <header class="topbar">
   <div class="brand"><span class="logo">G</span> Growth Ops Console</div>
   <nav id="tabs">
     <button data-view="overview" class="active">Overview</button>
     <button data-view="leads">Leads</button>
+    <button data-view="integrations">Integrations</button>
     <button data-view="sql">SQL</button>
     <button data-view="rules">Scoring rules</button>
   </nav>
@@ -42,9 +48,11 @@
     </div>
 
     <div class="charts">
+      <div class="card"><div id="chart-funnel" class="chart"></div></div>
       <div class="card"><div id="chart-channel" class="chart"></div></div>
-      <div class="card"><div id="chart-sector" class="chart"></div></div>
       <div class="card"><div id="chart-score" class="chart"></div></div>
+      <div class="card"><div id="chart-validation" class="chart"></div></div>
+      <div class="card"><div id="chart-sector" class="chart"></div></div>
       <div class="card"><div id="chart-age" class="chart"></div></div>
     </div>
   </section>
@@ -77,17 +85,25 @@
     </div>
   </section>
 
+  <!-- INTEGRATIONS -->
+  <section id="view-integrations" class="view">
+    <div class="sql-layout">
+      <aside class="card side-list" id="int-list"></aside>
+      <div id="int-detail"></div>
+    </div>
+  </section>
+
   <!-- SQL -->
   <section id="view-sql" class="view">
     <div class="sql-layout">
-      <aside class="card" id="sql-list"></aside>
+      <aside class="card side-list" id="sql-list"></aside>
       <div>
         <div class="card">
           <h2 id="sql-title">Query</h2>
           <textarea id="sql-text" spellcheck="false"></textarea>
           <div class="sql-actions">
             <button id="sql-run" class="primary">Run query</button>
-            <span class="muted">Read-only connection: SELECT queries only.</span>
+            <span class="muted" id="sql-mode">Read-only connection: SELECT queries only.</span>
           </div>
         </div>
         <div class="card tablewrap" id="sql-result"></div>
@@ -105,6 +121,6 @@
 <div class="scrim" id="scrim"></div>
 <aside class="drawer" id="drawer" aria-hidden="true"></aside>
 
-<script src="/static/app.js"></script>
+<script src="static/app.js"></script>
 </body>
 </html>

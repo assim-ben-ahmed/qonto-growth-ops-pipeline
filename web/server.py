@@ -3,6 +3,7 @@
 Run:  python -m web.server   ->  http://127.0.0.1:5000
 It only *reads* the SQLite db produced by `python run_pipeline.py`.
 """
+import json
 import re
 import sqlite3
 import sys
@@ -12,7 +13,8 @@ from typing import Any
 from flask import Flask, Response, jsonify, request, send_from_directory
 from plotly.offline import get_plotlyjs
 
-from src.config import DB_PATH, ROOT, SQL_DIR, load_config
+from src.config import DB_PATH, OUTPUT_DIR, ROOT, SQL_DIR, load_config
+from src.outcomes import auc
 
 STATIC_DIR = ROOT / "web" / "static"
 MAX_ROWS = 500
@@ -30,22 +32,25 @@ SELECT s.siren, s.score, s.pts_headcount, s.pts_age, s.pts_sector, s.pts_channel
        c.city, c.postal_code, c.legal_form, c.enrichment_status, c.missing_fields,
        l.Rating, l.OwnerQueue, l.LeadSource, l.Sales_Note__c AS note,
        l.Note_Source__c AS note_source, l.Note_Flags__c AS note_flags,
-       b.nurture_track
+       b.nurture_track, o.converted, o.true_probability
 FROM scored_leads s
 JOIN events e        ON e.message_id = s.message_id
 JOIN companies c     ON c.siren = s.siren
 LEFT JOIN crm_leads l     ON l.siren = s.siren
 LEFT JOIN braze_nurture b ON b.external_id = s.siren
+LEFT JOIN outcomes o      ON o.siren = s.siren
 ORDER BY s.score DESC, c.company_name
 """
 
 
-def query(sql: str, params: tuple = ()) -> list[dict[str, Any]]:
+def query(sql: str, params: tuple = (), limit: int | None = MAX_ROWS) -> list[dict[str, Any]]:
     """Run SQL on a read-only connection: the UI can never modify the data."""
     conn = sqlite3.connect(f"{DB_PATH.as_uri()}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     try:
-        return [dict(r) for r in conn.execute(sql, params).fetchmany(MAX_ROWS)]
+        cur = conn.execute(sql, params)
+        rows = cur.fetchmany(limit) if limit else cur.fetchall()
+        return [dict(r) for r in rows]
     finally:
         conn.close()
 
@@ -78,22 +83,49 @@ def plotly_js() -> Response:
 @app.get("/api/summary")
 def summary() -> Response:
     one = lambda sql: query(sql)[0]["n"]  # noqa: E731
+    current = "FROM companies WHERE siren IN (SELECT siren FROM events) AND"  # this run only
+    pairs = query("SELECT s.score, o.converted FROM scored_leads s "
+                  "JOIN outcomes o ON o.siren = s.siren", limit=None)
     return jsonify({
+        "visitors": one("SELECT COUNT(DISTINCT anonymous_id) n FROM web_events"),
         "events": one("SELECT COUNT(*) n FROM events"),
-        "enriched": one("SELECT COUNT(*) n FROM companies WHERE enrichment_status <> 'failed'"),
-        "partial": one("SELECT COUNT(*) n FROM companies WHERE enrichment_status = 'partial'"),
+        "enriched": one(f"SELECT COUNT(*) n {current} enrichment_status <> 'failed'"),
+        "partial": one(f"SELECT COUNT(*) n {current} enrichment_status = 'partial'"),
         "scored": one("SELECT COUNT(*) n FROM scored_leads"),
         "crm": one("SELECT COUNT(*) n FROM crm_leads"),
         "hot": one("SELECT COUNT(*) n FROM crm_leads WHERE Rating = 'Hot'"),
         "braze": one("SELECT COUNT(*) n FROM braze_nurture"),
         "notes_llm": one("SELECT COUNT(*) n FROM crm_leads WHERE Note_Source__c = 'llm'"),
         "notes_flagged": one("SELECT COUNT(*) n FROM crm_leads WHERE Note_Flags__c <> ''"),
+        "conversions": sum(p["converted"] for p in pairs),
+        "auc": auc([p["score"] for p in pairs], [p["converted"] for p in pairs]),
     })
 
 
 @app.get("/api/leads")
 def leads() -> Response:
     return jsonify(query(LEADS_SQL))
+
+
+@app.get("/api/journeys")
+def journeys() -> Response:
+    """Website journey of every customer: {anonymous_id: [Segment calls]}."""
+    rows = query("""SELECT w.anonymous_id, w.type, w.name, w.timestamp, w.path, w.user_id,
+                           w.utm_source, w.utm_medium, w.click_id
+                    FROM web_events w JOIN events e ON e.anonymous_id = w.anonymous_id
+                    -- identify and the sign-up share a timestamp: identify first
+                    ORDER BY w.timestamp, w.type = 'track'""", limit=None)
+    out: dict[str, list] = {}
+    for r in rows:
+        out.setdefault(r.pop("anonymous_id"), []).append(r)
+    return jsonify(out)
+
+
+@app.get("/api/outbox")
+def outbox() -> Response:
+    """The dry-run integration payloads written by the outbox stage."""
+    return jsonify({p.stem: json.loads(p.read_text(encoding="utf-8"))
+                    for p in sorted((OUTPUT_DIR / "outbox").glob("*.json"))})
 
 
 @app.get("/api/config")

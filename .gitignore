@@ -12,3 +12,6 @@ __pycache__/
 
 # generated outputs (dashboard screenshot in docs/ is kept)
 output/
+
+# static demo build (GitHub Pages)
+site/

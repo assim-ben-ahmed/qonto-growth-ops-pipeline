@@ -15,10 +15,12 @@ from jinja2 import Environment, FileSystemLoader
 from plotly.offline import get_plotlyjs
 
 from src.config import ROOT, SQL_DIR
+from src.outcomes import auc
 
 log = logging.getLogger(__name__)
 
 ACCENT, MUTED, GRID = "#5B4BDB", "#C9C3F2", "#E8E8EE"
+OUTCOME = "#1E9E7A"  # simulated outcomes always use this colour
 
 
 def run_sql(conn: sqlite3.Connection, filename: str) -> pd.DataFrame:
@@ -36,16 +38,32 @@ def _style(fig: go.Figure, title: str) -> go.Figure:
     return fig
 
 
-def build_charts(conn: sqlite3.Connection, threshold: int) -> list[go.Figure]:
+def build_charts(conn: sqlite3.Connection, threshold: int, score_auc: float | None) -> list[go.Figure]:
     """One chart per SQL query."""
-    ch = run_sql(conn, "01_hot_leads_by_channel.sql").sort_values("hot_rate_pct")
-    fig1 = go.Figure(go.Bar(x=ch["hot_rate_pct"], y=ch["source_channel"], orientation="h",
-                            marker_color=ACCENT, text=[f"{v:.0f}%" for v in ch["hot_rate_pct"]],
-                            textposition="outside", cliponaxis=False,
-                            customdata=ch[["hot_leads", "signups"]],
-                            hovertemplate="%{y}: %{customdata[0]}/%{customdata[1]} hot<extra></extra>"))
-    _style(fig1, "Hot-lead rate by acquisition channel")
+    funnel = run_sql(conn, "05_website_funnel.sql").groupby(["step_order", "step"], as_index=False)["visitors"].sum()
+    fig0 = go.Figure(go.Funnel(y=funnel["step"], x=funnel["visitors"], marker_color=ACCENT,
+                               textinfo="value+percent initial"))
+    _style(fig0, "Website funnel (Segment page / track calls)")
+
+    ch = run_sql(conn, "07_channel_outcomes.sql").sort_values("conversion_pct")
+    fig1 = go.Figure([
+        go.Bar(name="Sent to Sales (score)", x=ch["sent_to_sales_pct"], y=ch["source_channel"],
+               orientation="h", marker_color=ACCENT),
+        go.Bar(name="Converted (simulated)", x=ch["conversion_pct"], y=ch["source_channel"],
+               orientation="h", marker_color=OUTCOME),
+    ])
+    _style(fig1, "Channels: what the score says vs. what converts").update_layout(
+        barmode="group", legend=dict(orientation="h", y=-0.12, x=0, xanchor="left", traceorder="normal"))
     fig1.update_xaxes(ticksuffix="%", range=[0, 100])
+
+    val = run_sql(conn, "06_score_validation.sql")
+    fig_val = go.Figure(go.Bar(x=val["score_group"], y=val["conversion_pct"], marker_color=OUTCOME,
+                               text=[f"lift {v:.2f}" for v in val["lift"]], textposition="outside",
+                               cliponaxis=False, customdata=val[["score_range", "cum_share_of_conversions_pct"]],
+                               hovertemplate="Scores %{customdata[0]}: %{y}% converted<br>"
+                                             "%{customdata[1]}% of all conversions so far<extra></extra>"))
+    _style(fig_val, f"Conversion by score group - AUC {score_auc}")
+    fig_val.update_yaxes(ticksuffix="%", range=[0, 100])
 
     sec = run_sql(conn, "02_top_sectors.sql").sort_values("signups")
     fig2 = go.Figure([
@@ -71,13 +89,14 @@ def build_charts(conn: sqlite3.Connection, threshold: int) -> list[go.Figure]:
         go.Bar(name="Nurture (Braze)", x=age["label"], y=age["nurture"], marker_color=MUTED),
     ])
     _style(fig4, "Sign-ups by company age").update_layout(barmode="stack")
-    return [fig1, fig2, fig3, fig4]
+    return [fig0, fig1, fig3, fig_val, fig2, fig4]
 
 
 def kpis(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     one = lambda sql: conn.execute(sql).fetchone()[0]  # noqa: E731
     signups = one("SELECT COUNT(*) FROM events")
-    enriched = one("SELECT COUNT(*) FROM companies WHERE enrichment_status <> 'failed'")
+    enriched = one("SELECT COUNT(*) FROM companies WHERE enrichment_status <> 'failed' "
+                   "AND siren IN (SELECT siren FROM events)")  # this run only
     hot = one("SELECT COUNT(*) FROM crm_leads")
     flagged = one("SELECT COUNT(*) FROM crm_leads WHERE Note_Flags__c <> ''")
     llm = one("SELECT COUNT(*) FROM crm_leads WHERE Note_Source__c = 'llm'")
@@ -93,7 +112,9 @@ def kpis(conn: sqlite3.Connection) -> list[dict[str, Any]]:
 
 def run(conn: sqlite3.Connection, cfg: dict[str, Any], out_path: Path) -> Path:
     """Render output/dashboard.html."""
-    figs = build_charts(conn, cfg["scoring"]["threshold"])
+    pairs = conn.execute("SELECT s.score, o.converted FROM scored_leads s "
+                         "JOIN outcomes o ON o.siren = s.siren").fetchall()
+    figs = build_charts(conn, cfg["scoring"]["threshold"], auc([p[0] for p in pairs], [p[1] for p in pairs]))
     # plotly.js is embedded once in <head> so the file works offline.
     charts = [f.to_html(full_html=False, include_plotlyjs=False, default_width="100%",
                         config={"displayModeBar": False, "responsive": True}) for f in figs]

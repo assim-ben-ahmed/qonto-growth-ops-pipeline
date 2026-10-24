@@ -87,11 +87,15 @@ td.note { max-width: 380px; color: var(--muted); }
 /* SQL view */
 .sql-layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 12px; }
 @media (max-width: 800px) { .sql-layout { grid-template-columns: minmax(0, 1fr); } }
-#sql-list { padding: 8px; align-self: start; }
-#sql-list button { display: block; width: 100%; text-align: left; border: 0; background: none; padding: 9px 10px; border-radius: 8px; cursor: pointer; }
-#sql-list button:hover { background: var(--bg); }
-#sql-list button.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
-#sql-list .sep { border-top: 1px solid var(--line); margin: 6px 0; }
+.side-list { padding: 8px; align-self: start; }
+.side-list button { display: block; width: 100%; text-align: left; border: 0; background: none; padding: 9px 10px; border-radius: 8px; cursor: pointer; }
+.side-list button:hover { background: var(--bg); }
+.side-list button.active { background: var(--accent-soft); color: var(--accent); }
+#sql-list button.active { font-weight: 600; }
+.side-list .sep { border-top: 1px solid var(--line); margin: 6px 0; }
+#int-detail pre.json { max-height: 520px; }
+code { font: 12px Consolas, "Cascadia Mono", monospace; background: var(--bg); padding: 1px 5px; border-radius: 4px; }
+pre.json code, .demo-banner code { background: none; }
 textarea#sql-text { width: 100%; min-height: 230px; font: 12.5px/1.5 Consolas, "Cascadia Mono", monospace; border: 1px solid var(--line);
   border-radius: 8px; padding: 12px; background: #FBFBFD; resize: vertical; }
 .sql-actions { display: flex; gap: 12px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
@@ -126,5 +130,16 @@ dl.facts dt { color: var(--muted); }
 dl.facts dd { margin: 0; }
 .note-box { background: var(--bg); border-radius: 10px; padding: 12px 14px; font-size: 14px; }
 .note-box.flagged { background: var(--warn-soft); }
-pre.json { background: #1C1B29; color: #E6E4F5; border-radius: 10px; padding: 12px; font-size: 12px; overflow-x: auto; margin: 0; }
+pre.json { background: #1C1B29; color: #E6E4F5; border-radius: 10px; padding: 12px; font-size: 12px; overflow: auto; margin: 0 0 10px; max-height: 340px; }
+
+/* Website journey timeline */
+ol.timeline { list-style: none; margin: 0; padding: 0 0 0 14px; border-left: 2px solid var(--line); font-size: 13px; }
+ol.timeline li { position: relative; padding: 0 0 10px 10px; }
+ol.timeline li::before { content: ""; position: absolute; left: -21px; top: 5px; width: 10px; height: 10px; border-radius: 50%; background: var(--accent-mid); }
+ol.timeline li.identify::before, ol.timeline li:last-child::before { background: var(--accent); }
+ol.timeline .when { display: block; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; }
+
+/* Static demo banner (GitHub Pages) */
+.demo-banner { background: var(--accent); color: #fff; font-size: 13px; padding: 8px 24px; text-align: center; }
+.demo-banner a { color: #fff; font-weight: 600; margin-left: 6px; }
 .drawer a { color: var(--accent); }
