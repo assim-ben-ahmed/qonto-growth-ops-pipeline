@@ -77,6 +77,22 @@ def run(events: list[dict[str, Any]], companies: dict[str, dict[str, Any]],
     return {"scored_leads": scored, "crm_leads": crm, "braze_nurture": braze}
 
 
+def carry_over_notes(crm_rows: list[dict[str, Any]],
+                     old_notes: dict[str, dict[str, Any]]) -> int:
+    """Keep the AI notes of leads that are still in the CRM after re-scoring.
+
+    Without this, re-running only the score stage would wipe every note.
+    Returns how many notes were kept.
+    """
+    kept = 0
+    for row in crm_rows:
+        old = old_notes.get(row["siren"])
+        if old and old["Sales_Note__c"]:
+            row.update({k: old[k] for k in ("Sales_Note__c", "Note_Source__c", "Note_Flags__c")})
+            kept += 1
+    return kept
+
+
 def write_braze_csv(rows: list[dict[str, Any]], path: Path) -> None:
     """Braze user CSV import format: `external_id` column + one column per custom attribute."""
     with open(path, "w", newline="", encoding="utf-8") as f:
