@@ -8,7 +8,7 @@ import json
 import logging
 import random
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from src.api_client import CompanyApiClient
@@ -19,30 +19,56 @@ log = logging.getLogger(__name__)
 PER_PAGE = 25  # API maximum
 
 
-def fetch_companies(client: CompanyApiClient, cfg: dict[str, Any]) -> list[dict[str, str]]:
-    """Return ~n_companies unique {siren, company_name}, spread evenly across search terms."""
-    terms = cfg["ingest"]["search_terms"]
-    target = cfg["run"]["n_companies"]
-    per_term = -(-target // len(terms))  # ceiling division
-    seen: dict[str, str] = {}
+def keep_result(r: dict[str, Any], cohort: dict[str, Any], exclude_legal_forms: list[str],
+                today: date) -> bool:
+    """Should this search result join the cohort? (legal form + optional max age)"""
+    if r.get("nature_juridique") in exclude_legal_forms:
+        return False
+    max_age = cohort.get("max_age_days")
+    if max_age is None:
+        return True
+    try:
+        created = date.fromisoformat(r.get("date_creation") or "")
+    except ValueError:
+        return False
+    return (today - created).days <= max_age
+
+
+def fetch_cohort(client: CompanyApiClient, name: str, cohort: dict[str, Any],
+                 exclude_legal_forms: list[str], seen: dict[str, str], today: date) -> int:
+    """Add up to n_companies new {siren: name} to `seen`, spread evenly across search terms."""
+    terms = cohort["search_terms"]
+    per_term = -(-cohort["n_companies"] // len(terms))  # ceiling division
+    added = 0
 
     for term in terms:
         found_for_term, page = 0, 1
-        while found_for_term < per_term and page <= 5:
-            params = {"q": term, "page": page, "per_page": PER_PAGE, **cfg["ingest"]["filters"]}
-            body = client.get(params, cache_key=f"search_{term}_p{page}")
+        while found_for_term < per_term and added < cohort["n_companies"] and page <= 5:
+            params = {"q": term, "page": page, "per_page": PER_PAGE, **cohort["filters"]}
+            body = client.get(params, cache_key=f"{name}_{term}_p{page}")
             results = (body or {}).get("results", [])
             if not results:
                 break
             for r in results:
-                if r["siren"] not in seen and found_for_term < per_term:
+                if (r["siren"] not in seen and found_for_term < per_term
+                        and added < cohort["n_companies"]
+                        and keep_result(r, cohort, exclude_legal_forms, today)):
                     seen[r["siren"]] = r.get("nom_complet") or r.get("nom_raison_sociale") or ""
                     found_for_term += 1
+                    added += 1
             page += 1
-        log.info("search '%s': %d companies", term, found_for_term)
+        log.info("%s / '%s': %d companies", name, term, found_for_term)
+    return added
 
-    companies = [{"siren": s, "company_name": n} for s, n in seen.items()]
-    return companies[:target]
+
+def fetch_companies(client: CompanyApiClient, cfg: dict[str, Any]) -> list[dict[str, str]]:
+    """Return unique {siren, company_name} from every cohort in config.yaml."""
+    seen: dict[str, str] = {}  # dict keeps insertion order and dedups across cohorts
+    today = date.today()
+    for name, cohort in cfg["ingest"]["cohorts"].items():
+        n = fetch_cohort(client, name, cohort, cfg["ingest"]["exclude_legal_forms"], seen, today)
+        log.info("cohort %s: %d of %d companies", name, n, cohort["n_companies"])
+    return [{"siren": s, "company_name": n} for s, n in seen.items()]
 
 
 def make_signup_event(company: dict[str, str], cfg: dict[str, Any],
@@ -59,6 +85,7 @@ def make_signup_event(company: dict[str, str], cfg: dict[str, Any],
         "event": "Account Signed Up",
         "messageId": str(uuid.UUID(int=rng.getrandbits(128))),
         "anonymousId": str(uuid.UUID(int=rng.getrandbits(128))),
+        "userId": f"org_{company['siren']}",  # set by the identify call at sign-up
         "timestamp": ts.isoformat(timespec="seconds"),
         "properties": {
             "siren": company["siren"],
@@ -87,11 +114,10 @@ def load_events() -> list[dict[str, Any]]:
         return [json.loads(line) for line in f]
 
 
-def run(client: CompanyApiClient, cfg: dict[str, Any]) -> list[dict[str, Any]]:
+def run(client: CompanyApiClient, cfg: dict[str, Any], now: datetime) -> list[dict[str, Any]]:
     """Fetch companies, generate events, save them as JSON lines. Returns the events."""
     companies = fetch_companies(client, cfg)
     rng = random.Random(cfg["run"]["random_seed"])
-    now = datetime.now(timezone.utc).replace(hour=12, minute=0, second=0, microsecond=0)
     events = [make_signup_event(c, cfg, rng, now) for c in companies]
 
     out = RAW_DIR / "signup_events.jsonl"

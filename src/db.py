@@ -18,6 +18,26 @@ CREATE TABLE IF NOT EXISTS events (          -- Segment 'track' events
     plan_chosen    TEXT
 );
 
+CREATE TABLE IF NOT EXISTS web_events (      -- full Segment stream: page / track / identify
+    message_id   TEXT PRIMARY KEY,
+    type         TEXT,                       -- page | track | identify
+    name         TEXT,                       -- page name, track event name, or 'identify'
+    anonymous_id TEXT,                       -- browser cookie id, before sign-up
+    user_id      TEXT,                       -- account id, set from the identify call on
+    timestamp    TEXT,
+    path         TEXT,
+    utm_source   TEXT,
+    utm_medium   TEXT,
+    channel      TEXT,                       -- derived from the UTMs (attribution)
+    click_id     TEXT                        -- fbclid / gclid from the landing URL
+);
+
+CREATE TABLE IF NOT EXISTS outcomes (        -- simulated: active paying customer within 60 days?
+    siren            TEXT PRIMARY KEY,
+    converted        INTEGER,                -- 1 = yes
+    true_probability REAL                    -- the hidden model's probability (for transparency)
+);
+
 CREATE TABLE IF NOT EXISTS companies (       -- enrichment output, one row per SIREN
     siren             TEXT PRIMARY KEY,
     company_name      TEXT,

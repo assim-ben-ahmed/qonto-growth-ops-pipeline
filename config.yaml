@@ -1,7 +1,6 @@
 # All tunable knobs of the pipeline live here.
 
 run:
-  n_companies: 200          # how many real companies to turn into fake sign-ups
   random_seed: 42           # same seed -> same fake events -> reproducible runs
   signup_window_days: 30    # sign-ups are spread over the last N days
 
@@ -11,22 +10,37 @@ api:
   timeout_seconds: 10
   max_retries: 3
 
+# Real companies that become fake sign-ups, in two cohorts (200 in total).
 ingest:
-  # Varied terms so the sample covers several sectors.
-  search_terms:
-    - boulangerie
-    - conseil
-    - agence web
-    - plombier
-    - restaurant
-    - architecte
-    - expert comptable
-    - e-commerce
-    - transport
-    - coiffure
-  filters:
-    etat_administratif: A        # active companies only
-    categorie_entreprise: PME    # SMEs (Qonto's core market)
+  # Sole traders (legal form 1000): their company name is a person's name, so they are
+  # left out of the demo (GDPR data minimisation).
+  exclude_legal_forms: ["1000"]
+  cohorts:
+    established:                 # SMEs switching banks
+      n_companies: 170
+      search_terms: [boulangerie, conseil, agence web, plombier, restaurant,
+                     architecte, expert comptable, e-commerce, transport, coiffure]
+      filters:
+        etat_administratif: A        # active companies only
+        categorie_entreprise: PME    # SMEs (Qonto's core market)
+    new_business:                # companies created in the last year
+      n_companies: 30
+      # The API has no creation-date filter: search non-employers (too new to have an
+      # SME category yet) and keep only those created less than max_age_days ago.
+      max_age_days: 365
+      search_terms: [e-commerce, plombier, nettoyage, vtc, food truck]
+      filters:
+        etat_administratif: A
+        tranche_effectif_salarie: NN # no employees
+
+# Website tracking simulated before each sign-up (Segment page / track / identify calls).
+tracking:
+  site_url: https://www.example.com    # placeholder domain
+  # Visitors who left without signing up, per sign-up, by channel.
+  # Paid social brings many cheap clicks; accountant partners send people ready to sign up.
+  dropoffs_per_signup: {paid_meta: 9, paid_google: 4, seo: 6, partner_accountant: 0.5, referral: 1.5}
+  pricing_view_rate: 0.45   # share of those visitors who open the pricing page...
+  signup_start_rate: 0.40   # ...and, of those, the share who start the sign-up form
 
 # Acquisition channels: share of sign-ups + the UTM tags they carry.
 channels:
